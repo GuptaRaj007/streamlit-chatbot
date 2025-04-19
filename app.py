@@ -7,7 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-CSV_PATH = r"C:\raj\David Jonhson\Chatbot\stock_data_fullform.csv"
+CSV_PATH = "stock_data_fullform.csv"
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_ID = "deepseek/deepseek-r1:free"
 
