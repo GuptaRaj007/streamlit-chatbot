@@ -4,15 +4,11 @@ import requests
 import os
 import io
 import re
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
-# Load environment variables
-load_dotenv()
-
-# API and DB keys
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Use Streamlit secrets
+OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
+DATABASE_URL = st.secrets["DATABASE_URL"]
 MODEL_ID = "deepseek/deepseek-r1:free"
 
 st.set_page_config(page_title="💼 Stock CRM Assistant", layout="wide")
@@ -33,7 +29,6 @@ def load_data():
     except Exception as e:
         st.error(f"Database connection failed: {e}")
         return None
-
 # Enhanced query classification
 def classify_query(query):
     query = query.lower()
