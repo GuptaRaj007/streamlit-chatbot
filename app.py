@@ -181,4 +181,4 @@ with st.expander("Setup Guide"):
 2. Add:
 ```toml
 OPENROUTER_API_KEY = "your_api_key_here"
-DATABASE_URL = "your_database_url_here"""")
+DATABASE_URL = "your_database_url_here""")
