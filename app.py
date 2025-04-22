@@ -7,28 +7,33 @@ import re
 from sqlalchemy import create_engine
 
 # Use Streamlit secrets
-OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
-DATABASE_URL = st.secrets["DATABASE_URL"]
+OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", None)
+DATABASE_URL = st.secrets.get("DATABASE_URL", None)
 MODEL_ID = "deepseek/deepseek-r1:free"
 
 st.set_page_config(page_title="💼 Stock CRM Assistant", layout="wide")
 
-# Load stock data from PostgreSQL
-@st.cache_data
-def load_data():
-    try:
-        engine = create_engine(DATABASE_URL)
-        query = "SELECT * FROM stock_data"
-        df = pd.read_sql(query, engine)
-        num_cols = ['current_market_price', 'price_to_earnings_ratio', 'market_cap',
-                    'dividend_yield', 'net_profit', 'profit_growth', 'sales', 'sales_growth']
-        for col in num_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception as e:
-        st.error(f"Database connection failed: {e}")
-        return None
+# Check if DATABASE_URL is set in Streamlit secrets
+if DATABASE_URL is None:
+    st.error("DATABASE_URL is not set in Streamlit secrets or environment variables. Please check your .streamlit/secrets.toml file.")
+else:
+    # Load stock data from PostgreSQL
+    @st.cache_data
+    def load_data():
+        try:
+            engine = create_engine(DATABASE_URL)
+            query = "SELECT * FROM stock_data"
+            df = pd.read_sql(query, engine)
+            num_cols = ['current_market_price', 'price_to_earnings_ratio', 'market_cap',
+                        'dividend_yield', 'net_profit', 'profit_growth', 'sales', 'sales_growth']
+            for col in num_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+        except Exception as e:
+            st.error(f"Database connection failed: {e}")
+            return None
+
 # Enhanced query classification
 def classify_query(query):
     query = query.lower()
