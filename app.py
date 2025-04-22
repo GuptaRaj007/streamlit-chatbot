@@ -4,35 +4,41 @@ import requests
 import os
 import io
 import re
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
+import logging
 
-# Use Streamlit secrets
-OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", None)
-DATABASE_URL = st.secrets.get("DATABASE_URL", None)
+# Set up logging for debugging and error tracking
+logging.basicConfig(level=logging.INFO)
+
+# Load environment variables
+load_dotenv()
+
+# API and DB keys
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
 MODEL_ID = "deepseek/deepseek-r1:free"
 
 st.set_page_config(page_title="💼 Stock CRM Assistant", layout="wide")
 
-# Check if DATABASE_URL is set in Streamlit secrets
-if DATABASE_URL is None:
-    st.error("DATABASE_URL is not set in Streamlit secrets or environment variables. Please check your .streamlit/secrets.toml file.")
-else:
-    # Load stock data from PostgreSQL
-    @st.cache_data
-    def load_data():
-        try:
-            engine = create_engine(DATABASE_URL)
-            query = "SELECT * FROM stock_data"
-            df = pd.read_sql(query, engine)
-            num_cols = ['current_market_price', 'price_to_earnings_ratio', 'market_cap',
-                        'dividend_yield', 'net_profit', 'profit_growth', 'sales', 'sales_growth']
-            for col in num_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            return df
-        except Exception as e:
-            st.error(f"Database connection failed: {e}")
-            return None
+# Load stock data from PostgreSQL
+@st.cache_data
+def load_data():
+    try:
+        engine = create_engine(DATABASE_URL)
+        query = "SELECT * FROM stock_data"
+        df = pd.read_sql(query, engine)
+        num_cols = ['current_market_price', 'price_to_earnings_ratio', 'market_cap',
+                    'dividend_yield', 'net_profit', 'profit_growth', 'sales', 'sales_growth']
+        for col in num_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        logging.info("Data loaded successfully from PostgreSQL.")
+        return df
+    except Exception as e:
+        logging.error(f"Error loading data from the database: {e}")
+        st.error(f"Database connection failed: {e}")
+        return None
 
 # Enhanced query classification
 def classify_query(query):
@@ -67,29 +73,34 @@ def classify_query(query):
 
 # Data extractor for fundamental queries
 def extract_relevant_data(query, df):
-    clean_query = re.sub(r'[^a-zA-Z0-9\s]', '', query.lower())
-    keywords = clean_query.split()
+    try:
+        clean_query = re.sub(r'[^a-zA-Z0-9\s]', '', query.lower())
+        keywords = clean_query.split()
 
-    matched_df = df[df['company_name'].str.lower().str.contains('|'.join(keywords), na=False)]
+        matched_df = df[df['company_name'].str.lower().str.contains('|'.join(keywords), na=False)]
 
-    if not matched_df.empty:
-        st.session_state.last_companies = matched_df['company_name'].str.lower().unique().tolist()
-        st.session_state.last_user_query = query
-        return matched_df.head(3)
+        if not matched_df.empty:
+            st.session_state.last_companies = matched_df['company_name'].str.lower().unique().tolist()
+            st.session_state.last_user_query = query
+            return matched_df.head(3)
 
-    fallback_companies = []
-    for word in keywords:
-        fallback_df = df[df['company_name'].str.lower().str.contains(word, na=False)]
-        if not fallback_df.empty:
-            fallback_companies.append(word)
+        fallback_companies = []
+        for word in keywords:
+            fallback_df = df[df['company_name'].str.lower().str.contains(word, na=False)]
+            if not fallback_df.empty:
+                fallback_companies.append(word)
 
-    if fallback_companies:
-        st.session_state.last_companies = fallback_companies
-    elif st.session_state.last_companies:
-        matched_df = df[df['company_name'].str.lower().str.contains('|'.join(st.session_state.last_companies), na=False)]
-        return matched_df.head(3)
+        if fallback_companies:
+            st.session_state.last_companies = fallback_companies
+        elif st.session_state.last_companies:
+            matched_df = df[df['company_name'].str.lower().str.contains('|'.join(st.session_state.last_companies), na=False)]
+            return matched_df.head(3)
 
-    return df.head(3)
+        return df.head(3)
+    except Exception as e:
+        logging.error(f"Error extracting relevant data: {e}")
+        st.error(f"Error while processing your query: {e}")
+        return df.head(3)  # Return some default data in case of error
 
 # Enhanced response generator
 def generate_crm_response(query, context_md=None, query_type="theoretical"):
@@ -154,11 +165,13 @@ def generate_crm_response(query, context_md=None, query_type="theoretical"):
 
     try:
         response = requests.post(api_url, headers=headers, json=payload)
+        response.raise_for_status()  # This will raise an exception for HTTP errors
         response_data = response.json()
         return response_data["choices"][0]["message"]["content"] \
             if "choices" in response_data else f"Unexpected response: {response_data}"
-    except Exception as e:
-        return f"API error: {e}"
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error with API request: {e}")
+        return f"API request failed: {e}"
 
 # --- Load Data & Init State ---
 df = load_data()
