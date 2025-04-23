@@ -19,7 +19,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 MODEL_ID = "deepseek/deepseek-r1:free"
 
-st.set_page_config(page_title="💼 Stock CRM Assistant", layout="wide")
+st.set_page_config(page_title="💼 Stock Fundamental Analyst", layout="wide")
 
 # Load stock data from PostgreSQL
 @st.cache_data
@@ -28,11 +28,41 @@ def load_data():
         engine = create_engine(DATABASE_URL)
         query = "SELECT * FROM stock_data"
         df = pd.read_sql(query, engine)
-        num_cols = ['current_market_price', 'price_to_earnings_ratio', 'market_cap',
-                    'dividend_yield', 'net_profit', 'profit_growth', 'sales', 'sales_growth']
+        
+        # Ensure column names match the CSV structure
+        column_mapping = {
+            'serial_number': 'Serial Number',
+            'company_name': 'Company Name',
+            'current_market_price': 'Current Market Price (Rs.)',
+            'price_to_earnings_ratio': 'Price to Earnings Ratio',
+            'market_cap': 'Market Capitalization (Rs. Cr.)',
+            'dividend_yield': 'Dividend Yield (%)',
+            'net_profit': 'Net Profit This Quarter (Rs. Cr.)',
+            'profit_growth': 'Quarterly Profit Variation (%)',
+            'sales': 'Sales This Quarter (Rs. Cr.)',
+            'sales_growth': 'Quarterly Sales Variation (%)',
+            'roce': 'Return on Capital Employed (%)',
+            'avg_pat': 'Average PAT in Last 10 Years (Rs. Cr.)',
+            'avg_dividend': 'Average Dividend Payout in Last 3 Years (%)'
+        }
+        
+        # Rename columns to match CSV
+        df = df.rename(columns=column_mapping)
+        
+        # Convert numeric columns
+        num_cols = [
+            'Current Market Price (Rs.)', 'Price to Earnings Ratio', 
+            'Market Capitalization (Rs. Cr.)', 'Dividend Yield (%)',
+            'Net Profit This Quarter (Rs. Cr.)', 'Quarterly Profit Variation (%)',
+            'Sales This Quarter (Rs. Cr.)', 'Quarterly Sales Variation (%)',
+            'Return on Capital Employed (%)', 'Average PAT in Last 10 Years (Rs. Cr.)',
+            'Average Dividend Payout in Last 3 Years (%)'
+        ]
+        
         for col in num_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
+                
         logging.info("Data loaded successfully from PostgreSQL.")
         return df
     except Exception as e:
@@ -51,7 +81,8 @@ def classify_query(query):
         r'sales growth of', r'financials of', r'\beps of\b',
         r'earnings per share of', r'return on equity of', r'roce of',
         r'show me.*financial data', r'what is.*current market price of',
-        r'give me.*financial metrics for'
+        r'give me.*financial metrics for', r'compare.*financials',
+        r'list.*highest.*dividend', r'list.*lowest.*pe', r'ranking.*by.*market cap'
     ]
     
     # Check for fundamental patterns
@@ -60,11 +91,12 @@ def classify_query(query):
     
     # Check for company names (only if query is clearly asking for data)
     if df is not None:
-        company_names = df['company_name'].str.lower().unique()
+        company_names = df['Company Name'].str.lower().unique()
         if any(name in query for name in company_names):
             # Only treat as fundamental if asking for specific data
             data_terms = ['ratio', 'yield', 'profit', 'sales', 'growth', 
-                         'price', 'cap', 'financial', 'metric', 'data']
+                         'price', 'cap', 'financial', 'metric', 'data',
+                         'compare', 'list', 'show', 'what is', 'details']
             if any(term in query for term in data_terms):
                 return "fundamental"
     
@@ -77,23 +109,35 @@ def extract_relevant_data(query, df):
         clean_query = re.sub(r'[^a-zA-Z0-9\s]', '', query.lower())
         keywords = clean_query.split()
 
-        matched_df = df[df['company_name'].str.lower().str.contains('|'.join(keywords), na=False)]
+        # Handle ranking/comparison queries
+        if any(word in query.lower() for word in ['list', 'ranking', 'top', 'highest', 'lowest']):
+            if 'pe' in query.lower() or 'price to earnings' in query.lower():
+                return df.sort_values('Price to Earnings Ratio').head(5)
+            elif 'dividend' in query.lower():
+                return df.sort_values('Dividend Yield (%)', ascending=False).head(5)
+            elif 'market cap' in query.lower():
+                return df.sort_values('Market Capitalization (Rs. Cr.)', ascending=False).head(5)
+            elif 'profit growth' in query.lower():
+                return df.sort_values('Quarterly Profit Variation (%)', ascending=False).head(5)
+        
+        # Handle company-specific queries
+        matched_df = df[df['Company Name'].str.lower().str.contains('|'.join(keywords), na=False)]
 
         if not matched_df.empty:
-            st.session_state.last_companies = matched_df['company_name'].str.lower().unique().tolist()
+            st.session_state.last_companies = matched_df['Company Name'].str.lower().unique().tolist()
             st.session_state.last_user_query = query
             return matched_df.head(3)
 
         fallback_companies = []
         for word in keywords:
-            fallback_df = df[df['company_name'].str.lower().str.contains(word, na=False)]
+            fallback_df = df[df['Company Name'].str.lower().str.contains(word, na=False)]
             if not fallback_df.empty:
                 fallback_companies.append(word)
 
         if fallback_companies:
             st.session_state.last_companies = fallback_companies
         elif st.session_state.last_companies:
-            matched_df = df[df['company_name'].str.lower().str.contains('|'.join(st.session_state.last_companies), na=False)]
+            matched_df = df[df['Company Name'].str.lower().str.contains('|'.join(st.session_state.last_companies), na=False)]
             return matched_df.head(3)
 
         return df.head(3)
@@ -112,28 +156,51 @@ def generate_crm_response(query, context_md=None, query_type="theoretical"):
 
     # Strict system prompts
     if query_type == "theoretical":
-        system_prompt = (
-            "You are a professional Stock Market Analyst. Your task is to answer theoretical questions about "
-            "stock market concepts, investing strategies, and financial analysis techniques.\n\n"
-            "STRICT RULES FOR THEORETICAL ANSWERS:\n"
-            "1. NEVER mention any specific companies from the database\n"
-            "2. NEVER use actual numerical data from the database\n"
-            "3. Only provide general explanations using hypothetical examples\n"
-            "4. All examples must use generic terms like 'Company A' or 'Industry X'\n"
-            "5. Never refer to any real financial metrics from the database\n\n"
-            "Provide clear, conceptual explanations without referencing any real data. "
-            "If you don't know the answer, say 'I don't know' rather than guessing."
-        )
+        system_prompt = """You are an expert on Stock Market Concepts. Your task is to answer theoretical questions about  
+stock market concepts, investing strategies, financial analysis techniques, and market terminologies.
+
+STRICT RULES FOR THEORETICAL ANSWERS:
+
+1. Only use fundamental data (e.g., revenue, earnings, P/E ratio) from the database strictly for explanation or illustration—do not reference actual real-time or historical stock prices.
+2. Provide clear, conceptual explanations without referencing real stock tickers or external sources.
+3. Explain financial ratios, metrics, and technical indicators in a simplified and educational manner.
+4. Use standard financial terminology and explain terms like market cap, EPS, dividend yield, beta, etc. when relevant.
+5. When asked about strategies, explain general frameworks such as value investing, growth investing, momentum trading, swing trading, etc., without endorsing specific companies.
+6. If asked about charts or patterns, describe technical analysis tools like candlestick patterns, moving averages, RSI, MACD, Bollinger Bands, etc., in a theoretical context only.
+7. Clarify types of markets (bull/bear), types of orders (market, limit, stop-loss), and types of investors/traders (retail, institutional, intraday, long-term).
+8. When discussing training or learning paths, offer guidance on topics to study (e.g., financial statements, macroeconomic indicators, behavioral finance) but do not link to or suggest specific providers.
+9. Refrain from providing investment advice or stock recommendations.
+10. If you don't know the answer, simply say "I don't know" instead of guessing."""
     else:  # fundamental
-        system_prompt = (
-            "You are a professional Stock CRM Analyst Assistant. "
-            "You help users analyze fundamental stock data from a database. "
-            "When presenting data:\n"
-            "1. Be precise with numbers and metrics\n"
-            "2. Always cite the source as 'our database'\n"
-            "3. If data isn't available, explain what similar data exists\n"
-            "4. Provide context for the numbers when possible"
-        )
+        system_prompt = """You are a Stock Market Fundamental Data Analyst.
+Your role is to help users analyze and interpret fundamental stock data from a structured database.
+
+GUIDELINES FOR PRESENTING AND ANALYZING FUNDAMENTAL DATA:
+
+1. Be precise with all numerical data, including stock prices, P/E ratios, market cap, revenue, net profit, EPS, ROE, ROCE, and debt-equity ratio.
+2. Analyze core fundamental parameters of companies including but not limited to:
+   - Current Market Price (CMP)
+   - Market Capitalization
+   - Price-to-Earnings (PE) Ratio
+   - Earnings Per Share (EPS)
+   - Return on Equity (ROE)
+   - Debt to Equity Ratio
+   - Net Profit Margin, Operating Margin
+   - Revenue Growth, Profit Growth, etc.
+3. You must answer any query regarding Indian stocks, Indian companies, or the Indian Stock Market, including indices like NIFTY 50, Sensex, Bank NIFTY, etc.
+4. Support queries about industry-specific analysis in India—e.g., IT, Pharma, Banking, FMCG, Auto, Infra.
+5. Respond to ranking or comparison queries, such as:
+   - "Lowest PE stocks in the Indian stock market"
+   - "Highest revenue companies in India"
+   - "Top Indian companies by ROE or EPS"
+   - "Best dividend-paying Indian stocks"
+6. When asked for screeners or filters, provide logical, data-backed outputs, such as:
+   - "Stocks with market cap > ₹10,000 Cr and PE < 15"
+   - "Companies with consistent profit growth > 10% YoY for 5 years"
+7. Clarify financial jargon or metrics when needed to help users understand the significance of the data.
+8. Avoid providing technical analysis or price predictions—focus strictly on fundamentals.
+9. Do not guess or assume unavailable data—if something is not found in the database, respond with "Data not available."
+10. Ensure all answers are fact-driven, clear, and easy to understand, even for beginners."""
 
     messages = [
         {"role": "system", "content": system_prompt}
@@ -192,13 +259,14 @@ with st.sidebar:
     if st.session_state.chat_history:
         buf = io.StringIO()
         for msg in st.session_state.chat_history:
-            who = "User" if msg["role"] == "user" else "CRM Bot"
+            who = "User" if msg["role"] == "user" else "Analyst"
             buf.write(f"{who}: {msg['content']}\n\n")
         st.download_button("Download Chat", buf.getvalue(),
-                         file_name="stock_crm_chat.txt", mime="text/plain")
+                         file_name="stock_analysis_chat.txt", mime="text/plain")
 
 # --- Chat Display ---
-st.subheader("Conversation")
+st.title("💼 Stock Fundamental Analysis Assistant")
+st.subheader("Ask about Indian stocks or market concepts")
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
@@ -219,7 +287,8 @@ if df is not None:
             reply = generate_crm_response(user_input, query_type="theoretical")
         else:  # fundamental
             # For fundamental questions, extract relevant data
-            context_md = extract_relevant_data(user_input, df).to_markdown(index=False)
+            relevant_data = extract_relevant_data(user_input, df)
+            context_md = relevant_data.to_markdown(index=False)
             reply = generate_crm_response(user_input, context_md, query_type="fundamental")
 
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
@@ -228,11 +297,11 @@ if df is not None:
 
 # --- Data Table ---
 if df is not None:
-    with st.expander("Full Stock Data Table"):
+    with st.expander("📊 Full Stock Data Table"):
         st.dataframe(df, use_container_width=True, height=300)
 
 # --- Setup Guide ---
-with st.expander("Setup Guide"):
+with st.expander("⚙️ Setup Guide"):
     st.markdown("""
 1. Get your OpenRouter API key from [OpenRouter](https://openrouter.ai)  
 2. Create a `.env` file with this content:
