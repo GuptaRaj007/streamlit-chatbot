@@ -265,6 +265,7 @@ for msg in st.session_state.chat_history:
 
 # --- Chat Input + Processing ---
 # --- Chat Input + Processing ---
+# --- Chat Input + Processing Section (Updated) ---
 if df is not None and vectorstore is not None:
     user_input = st.chat_input("Ask about stocks (e.g. 'Explain PE ratio' or 'Show Coal India financials')")
     
@@ -276,40 +277,67 @@ if df is not None and vectorstore is not None:
         query_type = classify_query(user_input, vectorstore)
         st.session_state.last_query_type = query_type
         
-        # Prepare messages with conversation history
-        messages = []
-        
-        # Add system message based on query type
+        # ========================================================================
+        # OPTIMIZED PROMPTS (Theoretical vs. Fundamental)
+        # ========================================================================
         if query_type == "theoretical":
-            system_message = """You are an expert on Stock Market Concepts. Answer questions about stock market theory.
-            Guidelines:
-            1. Provide clear, conceptual explanations
-            2. Explain financial terms in simple language
-            3. Use examples where helpful
-            4. If unsure, say "I don't know" rather than guessing"""
+            system_prompt = """
+            You are a professional Stock Market Educator. Your task is to explain concepts clearly for beginners.
+
+            STRICT RULES:
+            1. Structure answers as: Definition → Importance → Example → Limitations.
+            2. Use hypothetical examples only (e.g., "A company with ₹100 crore revenue...").
+            3. If unsure, say: "I don't have enough context to answer this accurately."
+            4. Never recommend specific stocks or predict prices.
+
+            EXAMPLE RESPONSES:
+            Q: What is a P/E ratio?
+            A: 
+            - **Definition**: Price-to-Earnings ratio compares a company's stock price to its earnings per share.
+            - **Importance**: Helps assess if a stock is over/undervalued relative to earnings.
+            - **Example**: If a stock trades at ₹200 with ₹10 EPS, its P/E is 20.
+            - **Limitations**: Doesn't work for loss-making companies.
+            """
         else:
-            system_message = """You are a Stock Market Data Analyst. Analyze data and answer questions.
-            Guidelines:
-            1. Be precise with numerical data
-            2. Only use provided data
-            3. Explain metrics when appropriate
-            4. Compare companies if requested
-            5. Say "Data not available" if insufficient"""
+            system_prompt = """
+            You are a Stock Data Analyst working with a trusted database. Follow these rules:
+
+            DATA PRESENTATION:
+            - Format: "Metric: Value (Industry Avg: X)" (e.g., "P/E: 18.2 (Industry: 22.1)")
+            - For comparisons, use:
+              ```
+              Company A | Metric X: Value  
+              Company B | Metric X: Value
+              ```
+            - Highlight anomalies (e.g., "WARNING: Debt/Equity of 2.5 vs. industry 0.8")
+
+            USER REQUESTS:
+            1. Single Stock: Show CMP, P/E, ROE, Debt/Equity, Profit Growth.
+            2. Screening: "5 stocks matching: P/E < 15 AND ROE > 20%"
+            3. Missing Data: "Our database lacks dividend history for this stock (last updated: MM/YYYY)."
+
+            CAUTION:
+            - Never predict prices. Say: "Fundamentals suggest X, but future prices depend on market conditions."
+            """
         
-        messages.append({"role": "system", "content": system_message})
+        messages = [{"role": "system", "content": system_prompt}]
         
-        # Add conversation history (last 3 exchanges)
-        for msg in st.session_state.chat_history[-6:]:  # Keep last 3 exchanges (6 messages)
+        # Include conversation history (last 3 exchanges)
+        for msg in st.session_state.chat_history[-6:]:
             messages.append({"role": msg["role"], "content": msg["content"]})
         
-        # For fundamental queries, add relevant data context
+        # For fundamental queries, inject data context
         if query_type == "fundamental":
             relevant_data = retrieve_relevant_data(user_input, vectorstore, df)
             context_md = relevant_data.to_markdown(index=False)
-            messages[-1]["content"] = f"DATA CONTEXT:\n{context_md}\n\nQUESTION: {messages[-1]['content']}"
+            messages.append({
+                "role": "user", 
+                "content": f"LATEST DATA:\n{context_md}\n\nUSER QUESTION: {user_input}\n\nReminder: Reply in structured format."
+            })
         
-        # Get response from OpenRouter
+        # Get AI response
         reply = openrouter_chat_completion(messages)
+        # ========================================================================
         
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
